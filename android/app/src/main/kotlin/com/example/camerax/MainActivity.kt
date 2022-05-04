@@ -1,21 +1,14 @@
 package com.example.camerax
 
-import android.content.Intent
-import android.os.Bundle
-import com.example.camerax.camera.MainActivity
+import com.example.camerax.camerax.CameraWorksPlugin
 import io.flutter.embedding.android.FlutterActivity
-import io.flutter.plugin.common.MethodChannel
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.PluginRegistry
 
 class MainActivity: FlutterActivity() {
-    private val CHANNEL = "samples.flutter.dev/camera"
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        MethodChannel(flutterEngine?.dartExecutor?.binaryMessenger, CHANNEL).setMethodCallHandler {
-                call, result ->
-            if (call.method == "startCameraX") {
-                startActivity(Intent(this,MainActivity::class.java))
-                finish()
-            }
-        }
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+        flutterEngine.plugins.add(CameraWorksPlugin())
     }
+
 }
