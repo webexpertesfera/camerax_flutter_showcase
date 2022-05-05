@@ -5,9 +5,13 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.util.Log
+import android.view.OrientationEventListener
 import android.view.Surface
+import android.widget.Toast
 import androidx.annotation.NonNull
+import androidx.annotation.RequiresApi
 import androidx.camera.core.*
 import androidx.camera.core.ImageCapture.Metadata
 import androidx.camera.extensions.ExtensionMode
@@ -18,6 +22,9 @@ import androidx.core.content.ContextCompat
 import androidx.core.util.Consumer
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.Observer
+import androidx.lifecycle.whenResumed
+import androidx.lifecycle.whenStarted
+import com.bumptech.glide.load.ImageHeaderParser.UNKNOWN_ORIENTATION
 import com.example.camerax.R
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.plugin.common.EventChannel
@@ -48,6 +55,8 @@ class CameraWorksHandler(
     private var lensFacing: Int = CameraSelector.LENS_FACING_BACK
     private var imageCapture: ImageCapture? = null
 
+    private var analysis:ImageAnalysis?=null;
+
     private var selector: CameraSelector? = null
 
     companion object {
@@ -77,9 +86,8 @@ class CameraWorksHandler(
             "stop" -> stop(result)
             "takePicture" -> takePicture(result)
             "hasHDR" -> result.success(hasHdr())
+            "setZoomRatio"->setZoomRatio(call, result)
             "hasNightMode" -> result.success(hasNighMode())
-            "startHdr" -> null  // In-Progress
-            "startNightMode" -> null  // In-Progress
             else -> result.notImplemented()
         }
     }
@@ -157,23 +165,21 @@ class CameraWorksHandler(
         }
     }
 
+
     private fun start(call: MethodCall, result: MethodChannel.Result) {
         val future = ProcessCameraProvider.getInstance(binding.activity)
         executor = ContextCompat.getMainExecutor(binding.activity)
         outputDirectory = getOutputDirectory(binding.activity.applicationContext)
-
         future.addListener(Runnable {
             try {
                 cameraProvider = future.get()
                 textureEntry = textureRegistry.createSurfaceTexture()
                 val textureId = textureEntry!!.id()
 
-                if (call.arguments is Int) {
-                    selectLens(call.arguments as Int, true)
+                if (call.argument<Any>("cameraIndex") is Int) {
+                    selectLens(call.argument<Int>("cameraIndex") as Int, true)
                 }
-
-                bindCameraUseCases()
-
+                bindCameraUseCases(call.argument<Int>("isHdrMode") as Int,call.argument<Int>("isNightMode") as Int)
                 // TODO: seems there's not a better way to get the final resolution
                 @SuppressLint("RestrictedApi")
                 val resolution = preview!!.attachedSurfaceResolution!!
@@ -187,12 +193,11 @@ class CameraWorksHandler(
                 val answer = mapOf(
                     "textureId" to textureId,
                     "size" to size,
-                    "hasFlash" to camera!!.torchable
+                    "hasFlash" to camera!!.torchable,
+                    "isHdrMode" to call.argument<Int>("isHdrMode") as Int,
+                    "isNightMode" to call.argument<Int>("isNightMode") as Int
                 )
-
-
                 result.success(answer)
-
             } catch (e: IllegalArgumentException) {
                 Log.e(TAG, e.message ?: "")
                 result.error(ERROR_CODE, e.message, e.stackTrace)
@@ -210,9 +215,11 @@ class CameraWorksHandler(
     }
 
 
+
     /** Declare and bind preview, capture and analysis use cases */
-    private fun bindCameraUseCases() {
+    private fun bindCameraUseCases(isHdrMode:Int, isNightMode :Int) {
         val resultListener: Consumer<SurfaceRequest.Result> = Consumer<SurfaceRequest.Result> { }
+        // val scaleGestureDetector = ScaleGestureDetector(binding.activity, pinchToZoomListener)
 
         // Preview
         val surfaceProvider = Preview.SurfaceProvider { request ->
@@ -222,10 +229,7 @@ class CameraWorksHandler(
             val surface = Surface(texture)
             request.provideSurface(surface, executor, resultListener)
         }
-
         preview = Preview.Builder().build().apply { setSurfaceProvider(surfaceProvider) }
-
-
         // ImageCapture
         imageCapture = ImageCapture.Builder()
             // .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
@@ -235,9 +239,8 @@ class CameraWorksHandler(
             // Set initial target rotation, we will have to call this again if rotation changes
             // during the lifecycle of this use case
             .build()
-
         // Analyzer
-        val analysis = ImageAnalysis.Builder()
+         analysis = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
 
@@ -247,26 +250,109 @@ class CameraWorksHandler(
         if (!hasBackCamera() && !hasFrontCamera()) {
             throw IllegalStateException("Back and front camera are unavailable")
         }
-
         selector =
             CameraSelector.Builder().requireLensFacing(lensFacing).build()
+
+        if(isHdrMode == 1){
+            val extensionsManager =
+                ExtensionsManager.getInstanceAsync(binding.activity, cameraProvider!!).get()
+            if (extensionsManager.isExtensionAvailable(
+                    selector!!,
+                    ExtensionMode.HDR
+                )
+            ) {
+                // Retrieve extension enabled camera selector
+                selector = extensionsManager.getExtensionEnabledCameraSelector(
+                    selector!!,
+                    ExtensionMode.HDR
+                )
+                // Bind image capture and preview use cases with the extension enabled camera selector.
+            }else{
+                Toast.makeText(binding.activity,"Hdr not supported on this device",Toast.LENGTH_LONG).show()
+            }
+        }else if(isNightMode == 1){
+
+            val extensionsManager =
+                ExtensionsManager.getInstanceAsync(binding.activity, cameraProvider!!).get()
+            if (extensionsManager.isExtensionAvailable(
+                    selector!!,
+                    ExtensionMode.NIGHT
+                )
+            ) {
+                // Retrieve extension enabled camera selector
+                selector = extensionsManager.getExtensionEnabledCameraSelector(
+                    selector!!,
+                    ExtensionMode.NIGHT
+                )
+                // Bind image capture and preview use cases with the extension enabled camera selector.
+            }else{
+                Toast.makeText(binding.activity,"Night Mode not supported on this device",Toast.LENGTH_LONG).show()
+            }
+        }
+
+
         // Must unbind the use-cases before rebinding them
         cameraProvider!!.unbindAll()
+
         camera = cameraProvider!!.bindToLifecycle(owner, selector!!, preview, imageCapture, analysis)
-
-
         val observer: Observer<Int> =
             Observer<Int> { state -> // TorchState.OFF = 0; TorchState.ON = 1
-                val event = mapOf("name" to "flashState", "data" to state)
+                orientationEventListener.enable()//  Orientation Listener
+                val event = mapOf("name" to "flashState", "data" to state, "isHdrMode" to isHdrMode, "isNightMode" to isNightMode)
                 sink?.success(event)
-
             }
 
 
+
         camera!!.cameraInfo.torchState.observe(owner, observer)
-
-
     }
+
+
+
+
+    /*
+    *   Update the camera's zoom ratio. This is an asynchronous operation that returns
+    *   a ListenableFuture, allowing you to listen to when the operation completes.
+    *
+    * */
+    private fun  setZoomRatio(@NonNull call: MethodCall, @NonNull result: MethodChannel.Result){
+        // Get the pinch gesture's scaling factor
+
+        val currentZoomRatio = camera!!.cameraInfo.zoomState.value?.zoomRatio ?: 0F
+        val  ratio=call.arguments.toString().toDouble()
+        Log.e("RATION",ratio.toString())
+
+
+        camera!!.cameraControl.setZoomRatio((currentZoomRatio * ratio).toFloat())
+        result.success(currentZoomRatio * ratio)
+    }
+
+/*
+*
+*
+*
+* */
+    private val orientationEventListener by lazy {
+        object : OrientationEventListener(binding.activity) {
+            override fun onOrientationChanged(orientation: Int) {
+                if (orientation == UNKNOWN_ORIENTATION) {
+                    return
+                }
+
+                val rotation = when (orientation) {
+                    in 45 until 135 -> Surface.ROTATION_270
+                    in 135 until 225 -> Surface.ROTATION_180
+                    in 225 until 315 -> Surface.ROTATION_90
+                    else -> Surface.ROTATION_0
+                }
+                imageCapture?.targetRotation = rotation
+                analysis?.targetRotation = rotation
+
+            }
+        }
+    }
+
+
 
     private fun setFlash(call: MethodCall, result: MethodChannel.Result) {
         try {
@@ -378,7 +464,7 @@ class CameraWorksHandler(
         try {
             if (call.arguments is Int) {
                 selectLens(call.arguments as Int, true)
-                bindCameraUseCases()
+                bindCameraUseCases(0,0)
                 result.success(true)
             } else {
                 Log.e(TAG, "Params Camera Id Is a Null")
@@ -405,12 +491,11 @@ class CameraWorksHandler(
             camera?.cameraInfo?.torchState?.removeObservers(owner)
             cameraProvider?.unbindAll()
             textureEntry?.release()
-
             camera = null
             textureEntry = null
             cameraProvider = null
             imageCapture = null
-
+            orientationEventListener.disable()
             result.success(true)
         } catch (e: IllegalArgumentException) {
             Log.e(TAG, e.message ?: "")

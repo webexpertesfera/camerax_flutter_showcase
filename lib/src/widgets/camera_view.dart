@@ -8,6 +8,10 @@ class CameraView extends StatelessWidget {
   /// The controller of the camera.
   final CameraController controller;
 
+  double zoom = 1.0;
+  double _scaleFactor = 1.0;
+
+
   /// Create a [CameraView] with a [controller], the [controller] must has been initialized.
   CameraView(this.controller);
 
@@ -23,7 +27,8 @@ class CameraView extends StatelessWidget {
     if (value == null) {
       return Container(color: Colors.black);
     } else {
-      return ClipRect(
+      return
+        ClipRect(
         child: Transform.scale(
           scale: value.size.fill(MediaQuery.of(context).size),
           child: Center(
